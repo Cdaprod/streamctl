@@ -1,0 +1,29 @@
+# Gist Version 1
+#!/bin/bash
+
+SESSION="wfstream"
+
+case "$1" in
+  start)
+    tmux has-session -t $SESSION 2>/dev/null
+    if [ $? != 0 ]; then
+      echo "Starting desktop stream..."
+      tmux new-session -d -s $SESSION 'wf-recorder -o - | ffmpeg -f matroska -i - -c:v libx264 -f rtsp rtsp://localhost:8554/stream'
+    else
+      echo "Stream already running."
+    fi
+    ;;
+  stop)
+    tmux kill-session -t $SESSION
+    echo "Stream stopped."
+    ;;
+  status)
+    tmux has-session -t $SESSION 2>/dev/null && echo "Stream running." || echo "Stream not running."
+    ;;
+  attach)
+    tmux attach -t $SESSION
+    ;;
+  *)
+    echo "Usage: streamctl {start|stop|status|attach}"
+    ;;
+esac
