@@ -1,29 +1,106 @@
-# Gist Version 1
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
 
 SESSION="wfstream"
+OUTPUT_MODE="${2:-hls}"
+HLS_DIR="/dev/shm/hls"
+HLS_PORT="8080"
+STREAM_PORT="8090"
+LOG_FILE="/tmp/streamctl.log"
 
-case "$1" in
+# Detect display ID for Wayland
+DISPLAY_ID=$(wlr-randr | awk '/Enabled: yes/{print prev}{prev=$1}' | head -n1)
+
+# Export critical Wayland environment for tmux sessions
+WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+
+start_hls() {
+  mkdir -p "$HLS_DIR"
+  echo "Starting HLS stream: http://$(hostname -I | awk '{print $1}'):$HLS_PORT/stream.m3u8"
+  tmux new-session -d -s "$SESSION" bash -c "
+    export DISPLAY_ID=${DISPLAY_ID}
+    export WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+    export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
+    exec wf-recorder -o \$DISPLAY_ID -x yuv420p -f - | \
+    ffmpeg -f rawvideo -pix_fmt yuv420p -video_size 1920x1080 -i - \
+      -c:v libx264 -preset ultrafast -tune zerolatency \
+      -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
+      -hls_segment_filename '${HLS_DIR}/stream_%03d.ts' \
+      '${HLS_DIR}/stream.m3u8' 2>&1 | tee '${LOG_FILE}'
+  "
+  sleep 1
+  tmux new-session -d -s "${SESSION}_http" bash -c "
+    cd ${HLS_DIR} && python3 -m http.server ${HLS_PORT}
+  "
+}
+
+start_mjpeg() {
+  echo "Starting MJPEG stream: http://$(hostname -I | awk '{print $1}'):$STREAM_PORT/"
+  tmux new-session -d -s "$SESSION" bash -c "
+    export DISPLAY_ID=${DISPLAY_ID}
+    export WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+    export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
+    exec wf-recorder -o \$DISPLAY_ID -x yuv420p -f - | \
+    ffmpeg -f rawvideo -pix_fmt yuv420p -video_size 1920x1080 -i - \
+      -c:v mjpeg -f mjpeg http://0.0.0.0:${STREAM_PORT}/ 2>&1 | tee '${LOG_FILE}'
+  "
+}
+
+start_rtsp() {
+  echo "Starting RTSP stream: rtsp://$(hostname -I | awk '{print $1}'):8554/live.stream"
+  tmux new-session -d -s "$SESSION" bash -c "
+    export DISPLAY_ID=${DISPLAY_ID}
+    export WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+    export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
+    exec wf-recorder -o \$DISPLAY_ID -x yuv420p -f - | \
+    ffmpeg -f rawvideo -pix_fmt yuv420p -video_size 1920x1080 -i - \
+      -f rtsp rtsp://0.0.0.0:8554/live.stream 2>&1 | tee '${LOG_FILE}'
+  "
+}
+
+case "${1:-}" in
   start)
-    tmux has-session -t $SESSION 2>/dev/null
-    if [ $? != 0 ]; then
-      echo "Starting desktop stream..."
-      tmux new-session -d -s $SESSION 'wf-recorder -o - | ffmpeg -f matroska -i - -c:v libx264 -f rtsp rtsp://localhost:8554/stream'
-    else
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
       echo "Stream already running."
+      exit 0
     fi
+    case "$OUTPUT_MODE" in
+      hls) start_hls ;;
+      mjpeg) start_mjpeg ;;
+      rtsp) start_rtsp ;;
+      *) echo "Unsupported mode: $OUTPUT_MODE"; exit 1 ;;
+    esac
     ;;
   stop)
-    tmux kill-session -t $SESSION
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    tmux kill-session -t "${SESSION}_http" 2>/dev/null || true
     echo "Stream stopped."
     ;;
   status)
-    tmux has-session -t $SESSION 2>/dev/null && echo "Stream running." || echo "Stream not running."
+    running=false
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      echo "✅ Video stream session ($SESSION) is running."
+      running=true
+    else
+      echo "❌ Video stream session ($SESSION) is not running."
+    fi
+    if tmux has-session -t "${SESSION}_http" 2>/dev/null; then
+      echo "✅ HTTP server is running on port $HLS_PORT."
+      running=true
+    else
+      echo "❌ HTTP server is not running."
+    fi
+    $running || exit 1
     ;;
   attach)
-    tmux attach -t $SESSION
+    tmux attach -t "$SESSION"
+    ;;
+  log)
+    tail -f "$LOG_FILE"
     ;;
   *)
-    echo "Usage: streamctl {start|stop|status|attach}"
+    echo "Usage: streamctl {start|stop|status|attach|log} [hls|mjpeg|rtsp]"
     ;;
 esac
