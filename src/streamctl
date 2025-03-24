@@ -29,18 +29,19 @@ start_hls() {
   mkfifo "$FIFO"
 
   tmux new-session -d -s "$SESSION" bash -c "
-    exec 3<> $FIFO
-    wf-recorder -o \"$DISPLAY_ID\" -m matroska -f $FIFO &
-    ffmpeg -y -re -i $FIFO \
-      -c:v libx264 -preset ultrafast -tune zerolatency \
-      -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
-      -hls_segment_filename \"${HLS_DIR}/stream_%03d.ts\" \
-      \"${HLS_DIR}/stream.m3u8\" 2>&1 | tee \"${LOG_FILE}\"
+    (
+      wf-recorder -o \"$DISPLAY_ID\" -m matroska -f \"$FIFO\" 2>> \"$LOG_FILE\" &
+      sleep 1
+      ffmpeg -nostdin -y -f matroska -i \"$FIFO\" \
+        -c:v libx264 -preset ultrafast -tune zerolatency \
+        -f hls -hls_time 2 -hls_list_size 5 -hls_flags delete_segments \
+        -hls_segment_filename \"${HLS_DIR}/stream_%03d.ts\" \
+        \"${HLS_DIR}/stream.m3u8\" 2>&1 | tee \"$LOG_FILE\"
+    )
   "
 
   sleep 1
 
-  # Kill old HTTP server if port is in use
   fuser -k ${HLS_PORT}/tcp > /dev/null 2>&1 || true
 
   tmux new-session -d -s "${SESSION}_http" bash -c "
@@ -54,9 +55,12 @@ start_mjpeg() {
   rm -f "$FIFO"
   mkfifo "$FIFO"
   tmux new-session -d -s "$SESSION" bash -c "
-    wf-recorder -o $DISPLAY_ID -m matroska -f $FIFO &
-    ffmpeg -y -re -i $FIFO \
-      -c:v mjpeg -f mjpeg http://0.0.0.0:$STREAM_PORT/ 2>&1 | tee ${LOG_FILE}
+    (
+      wf-recorder -o \"$DISPLAY_ID\" -m matroska -f \"$FIFO\" 2>> \"$LOG_FILE\" &
+      sleep 1
+      ffmpeg -nostdin -y -f matroska -i \"$FIFO\" \
+        -c:v mjpeg -f mjpeg http://0.0.0.0:$STREAM_PORT/ 2>&1 | tee \"$LOG_FILE\"
+    )
   "
 }
 
@@ -65,10 +69,13 @@ start_rtsp() {
   rm -f "$FIFO"
   mkfifo "$FIFO"
   tmux new-session -d -s "$SESSION" bash -c "
-    wf-recorder -o $DISPLAY_ID -m matroska -f $FIFO &
-    ffmpeg -y -re -i $FIFO \
-      -c:v libx264 -preset ultrafast -tune zerolatency \
-      -f rtsp rtsp://0.0.0.0:8554/live.stream 2>&1 | tee ${LOG_FILE}
+    (
+      wf-recorder -o \"$DISPLAY_ID\" -m matroska -f \"$FIFO\" 2>> \"$LOG_FILE\" &
+      sleep 1
+      ffmpeg -nostdin -y -f matroska -i \"$FIFO\" \
+        -c:v libx264 -preset ultrafast -tune zerolatency \
+        -f rtsp rtsp://0.0.0.0:8554/live.stream 2>&1 | tee \"$LOG_FILE\"
+    )
   "
 }
 
